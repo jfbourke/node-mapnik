@@ -5,6 +5,7 @@
 #include "mapnik_map.hpp"
 #include "mapnik_image.hpp"
 #include "mapnik_grid.hpp"
+#include "mapnik_cairo_surface.hpp"
 #include "mapnik_datasource.hpp"
 
 #include "mapnik_vector_tile.hpp"
@@ -25,6 +26,17 @@
 #include <mapnik/grid/grid_renderer.hpp>  // for grid_renderer
 #include <mapnik/box2d.hpp>
 #include <mapnik/scale_denominator.hpp>
+
+#ifdef HAVE_CAIRO
+#include <mapnik/cairo_renderer.hpp>
+#include <cairo.h>
+#ifdef CAIRO_HAS_PDF_SURFACE
+#include <cairo-pdf.h>
+#endif
+#ifdef CAIRO_HAS_SVG_SURFACE
+#include <cairo-svg.h>
+#endif // CAIRO_HAS_SVG_SURFACE
+#endif
 
 #include <boost/make_shared.hpp>
 #include <boost/foreach.hpp>
@@ -73,8 +85,7 @@ VectorTile::VectorTile(int z, int x, int y, unsigned w, unsigned h) :
     tiledata_(),
     width_(w),
     height_(h),
-    painted_(false),
-    estimated_size_(0) {}
+    painted_(false) {}
 
 VectorTile::~VectorTile() { }
 
@@ -628,6 +639,7 @@ typedef struct {
     Map* m;
     VectorTile* d;
     Image * im;
+    CairoSurface * c;
     Grid * g;
     std::size_t layer_idx;
     int z;
@@ -719,6 +731,12 @@ Handle<Value> VectorTile::render(const Arguments& args)
         Image *im = ObjectWrap::Unwrap<Image>(im_obj);
         closure->im = im;
         closure->im->_ref();
+    }
+    else if (CairoSurface::constructor->HasInstance(im_obj))
+    {
+        CairoSurface *c = ObjectWrap::Unwrap<CairoSurface>(im_obj);
+        closure->c = c;
+        closure->c->_ref();
     }
     else if (Grid::constructor->HasInstance(im_obj))
     {
@@ -919,6 +937,27 @@ void VectorTile::EIO_RenderTile(uv_work_t* req)
                 ren.end_map_processing(map_in);
             }
         }
+        else if (closure->c)
+        {
+#ifdef HAVE_CAIRO
+#ifdef CAIRO_HAS_SVG_SURFACE
+            mapnik::cairo_surface_ptr surface;
+            CairoSurface::i_stream & ss = closure->c->ss_;
+            surface = mapnik::cairo_surface_ptr(cairo_svg_surface_create_for_stream(
+                                                   (cairo_write_func_t)closure->c->write_callback,
+                                                   (void*)(&ss),
+                                                   static_cast<double>(req.width()),
+                                                   static_cast<double>(req.height())
+                                                ),mapnik::cairo_surface_closer());
+            mapnik::cairo_ptr c_context = (mapnik::create_context(surface));
+            mapnik::cairo_renderer<mapnik::cairo_ptr> svg_render(map_in,c_context,closure->scale_factor);
+            svg_render.apply();
+#else
+            closure->error = true;
+            closure->error_name = "no support for rendering svg";
+#endif // CAIRO_HAS_SVG_SURFACE
+#endif
+        }
         // render all layers with agg
         else
         {
@@ -999,9 +1038,14 @@ void VectorTile::EIO_AfterRenderTile(uv_work_t* req)
             Local<Value> argv[2] = { Local<Value>::New(Null()), Local<Value>::New(closure->im->handle_) };
             closure->cb->Call(Context::GetCurrent()->Global(), 2, argv);
         }
-        else
+        else if (closure->g)
         {
             Local<Value> argv[2] = { Local<Value>::New(Null()), Local<Value>::New(closure->g->handle_) };
+            closure->cb->Call(Context::GetCurrent()->Global(), 2, argv);
+        }
+        else if (closure->c)
+        {
+            Local<Value> argv[2] = { Local<Value>::New(Null()), Local<Value>::New(closure->c->handle_) };
             closure->cb->Call(Context::GetCurrent()->Global(), 2, argv);
         }
     }

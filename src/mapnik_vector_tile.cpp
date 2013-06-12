@@ -950,8 +950,55 @@ void VectorTile::EIO_RenderTile(uv_work_t* req)
                                                    static_cast<double>(req.height())
                                                 ),mapnik::cairo_surface_closer());
             mapnik::cairo_ptr c_context = (mapnik::create_context(surface));
-            mapnik::cairo_renderer<mapnik::cairo_ptr> svg_render(map_in,c_context,closure->scale_factor);
-            svg_render.apply();
+            mapnik::cairo_renderer<mapnik::cairo_ptr> ren(map_in,req,c_context,closure->scale_factor);
+            ren.start_map_processing(map_in);
+
+            // loop over layers in map and match by name
+            // with layers in the vector tile
+            for (unsigned i=0; i < layers_size; ++i)
+            {
+                mapnik::layer const& lyr = layers[i];
+                if (lyr.visible(scale_denom))
+                {
+                    int tile_layer_idx = -1;
+                    for (int j=0; j < tiledata.layers_size(); ++j)
+                    {
+                        mapnik::vector::tile_layer const& layer = tiledata.layers(j);
+                        if (lyr.name() == layer.name())
+                        {
+                            tile_layer_idx = j;
+                            break;
+                        }
+                    }
+                    if (tile_layer_idx > -1)
+                    {
+                        mapnik::vector::tile_layer const& layer = tiledata.layers(tile_layer_idx);
+                        mapnik::layer lyr_copy(lyr);
+                        boost::shared_ptr<mapnik::vector::tile_datasource> ds = boost::make_shared<
+                                                        mapnik::vector::tile_datasource>(
+                                                            layer,
+                                                            closure->d->x_,
+                                                            closure->d->y_,
+                                                            closure->d->z_,
+                                                            closure->d->width_
+                                                            );
+                        ds->set_envelope(map_extent);
+                        lyr_copy.set_datasource(ds);
+                        std::set<std::string> names;
+                        ren.apply_to_layer(lyr_copy,
+                                           ren,
+                                           map_proj,
+                                           req.scale(),
+                                           scale_denom,
+                                           req.width(),
+                                           req.height(),
+                                           req.extent(),
+                                           req.buffer_size(),
+                                           names);
+                    }
+                }
+            }
+            ren.end_map_processing(map_in);
 #else
             closure->error = true;
             closure->error_name = "no support for rendering svg";
